@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Centro Educativo</title>
+  <circle cx="32" cy="32" r="32" fill="#EAF1FB"/>
+  <circle cx="32" cy="32" r="26" fill="#1F5BB5" stroke="#DCE5F2" stroke-width=".7"/>
+  <path fill="#FFFFFF" d="M32 10 56 21 32 32 8 21Z"/>
+  <path fill="#E0F2FE" d="M18 25.5V33c0 6 28 6 28 0v-7.5c-6 3-22 3-28 0Z"/>
+  <path fill="none" stroke="#B8D0F2" stroke-linecap="round" stroke-width="2" d="M32 21q18 0 18 7v10"/>
+  <path fill="#B8D0F2" d="M48 37h4l1 7h-6Z"/>
+  <circle cx="32" cy="21" r="2.5" fill="#B8D0F2"/>
+  <path fill="#FFFFFF" d="M31 43c-7-3.5-15-3.5-21-0.5v11c6-3 14-3 21 1Zm2 0c7-3.5 15-3.5 21-0.5v11c-6-3-14-3-21 1Z"/>
+  <path fill="none" stroke="#B8D0F2" stroke-linecap="round" stroke-width="1.5" d="M14 45c5-1.5 11-1.5 15 1m-15 2.5c5-1.5 11-1.5 15 1m21-4.5c-5-1.5-11-1.5-15 1m15 2.5c-5-1.5-11-1.5-15 1"/>
+</svg>
