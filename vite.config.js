@@ -11,8 +11,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         "/api": {
           target:
-            env.VITE_PROXY_TARGET ||
-            "https://sgau-backend-api-467280352705.us-central1.run.app",
+            env.VITE_PROXY_TARGET,
           changeOrigin: true,
           secure: true,
           configure(proxy) {
