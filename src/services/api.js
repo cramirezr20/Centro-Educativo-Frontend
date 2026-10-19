@@ -1,9 +1,8 @@
 import axios from "axios";
+import { clearSession, readSession, SESSION_KEY } from "../utils/auth.js";
+import { resolveApiUrl } from "./apiConfig.js";
 
-const API_URL = (
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.DEV ? "/api" : "https://sgau-backend-api-467280352705.us-central1.run.app/api")
-).replace(/\/+$/, "");
+const API_URL = resolveApiUrl(import.meta.env?.PROD, import.meta.env?.VITE_API_URL);
 
 export const api = axios.create({
   baseURL: API_URL,
@@ -11,14 +10,10 @@ export const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-export const SESSION_KEY = "centro-educativo-session";
-
 api.interceptors.request.use((config) => {
-  let session;
-  try {
-    session = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
-  } catch {
-    localStorage.removeItem(SESSION_KEY);
+  const hadSession = localStorage.getItem(SESSION_KEY) !== null;
+  const session = readSession();
+  if (hadSession && !session) {
     window.dispatchEvent(new Event("centro-educativo:session-expired"));
   }
   if (session?.token) {
@@ -31,7 +26,7 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem(SESSION_KEY);
+      clearSession();
       window.dispatchEvent(new Event("centro-educativo:session-expired"));
     }
     return Promise.reject(error);
@@ -39,15 +34,19 @@ api.interceptors.response.use(
 );
 
 export function getApiErrorMessage(error) {
+  if (error.response?.status === 401) return "La sesión expiró. Inicia sesión nuevamente.";
+  if (error.response?.status === 403) return "No tienes permiso para realizar esta operación.";
+  const safeMessage = (message) =>
+    /\bBearer\s+\S+|[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(message)
+      ? "La solicitud no pudo completarse."
+      : message;
   const data = error.response?.data;
-  if (typeof data === "string" && data.trim()) return data;
+  if (typeof data === "string" && data.trim()) return safeMessage(data);
   if (data && typeof data === "object") {
     const message = data.message || data.mensaje || data.error;
-    if (typeof message === "string" && message.trim()) return message;
+    if (typeof message === "string" && message.trim()) return safeMessage(message);
   }
   if (error.response) {
-    if (error.response.status === 401) return "La sesión expiró. Inicia sesión nuevamente.";
-    if (error.response.status === 403) return "No tienes permiso para realizar esta operación.";
     if (error.response.status === 404) return "No se encontró el recurso solicitado.";
     if (error.response.status >= 500) {
       return `El servidor encontró un problema (${error.response.status}).`;
@@ -57,5 +56,5 @@ export function getApiErrorMessage(error) {
   if (error.request) {
     return "No se pudo conectar con el servidor. Verifica tu conexión e intenta de nuevo.";
   }
-  return error.message || "Ocurrió un error inesperado.";
+  return error.message ? safeMessage(error.message) : "Ocurrió un error inesperado.";
 }
