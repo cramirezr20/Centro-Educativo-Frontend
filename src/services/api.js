@@ -1,9 +1,45 @@
 import axios from "axios";
 
-const API_URL = (
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.DEV ? "/api" : "https://sgau-backend-api-467280352705.us-central1.run.app/api")
-).replace(/\/+$/, "");
+const DEFAULT_PROD_API_URL = "https://sgau-backend-api-467280352705.us-central1.run.app/api";
+
+export function resolveSecureApiUrl(rawUrl, isDev = false) {
+  const candidate = String(
+    rawUrl || (isDev ? "/api" : DEFAULT_PROD_API_URL),
+  )
+    .trim()
+    .replace(/\/+$/, "");
+
+  if (candidate.startsWith("/")) {
+    return candidate;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error(`URL de API inválida: "${candidate}".`);
+  }
+
+  if (parsed.username || parsed.password) {
+    throw new Error("La URL de la API no debe incluir credenciales embebidas.");
+  }
+
+  const isLocalhost =
+    parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+
+  if (parsed.protocol !== "https:" && !(isDev && isLocalhost)) {
+    throw new Error(
+      `Configuración insegura bloqueada (OWASP): se requiere HTTPS para "${candidate}".`,
+    );
+  }
+
+  return candidate;
+}
+
+const API_URL = resolveSecureApiUrl(
+  import.meta.env?.VITE_API_URL,
+  Boolean(import.meta.env?.DEV),
+);
 
 export const api = axios.create({
   baseURL: API_URL,

@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:security": "node --test tests/owasp-security.test.js",
+    "audit:deps": "npm audit --audit-level=low",
+    "security:check": "node --test tests/owasp-security.test.js"
   },
   "dependencies": {
     "axios": "^1.10.0",
