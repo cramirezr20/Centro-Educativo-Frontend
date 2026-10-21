@@ -1,6 +1,5 @@
 import { useState } from "react";
 import logo from "../assets/centro-educativo-logo.svg";
-import { getApiErrorMessage } from "../services/api.js";
 import { login } from "../services/educationService.js";
 import { createSession, saveSession } from "../utils/auth.js";
 
@@ -23,7 +22,7 @@ export default function LoginPage({ onLogin }) {
       setError(
         requestError.response?.status === 401
           ? "El usuario o la contraseña no son correctos."
-          : getApiErrorMessage(requestError),
+          : "No se pudo iniciar sesión. Intenta de nuevo.",
       );
     } finally {
       setSubmitting(false);
