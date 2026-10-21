@@ -1,16 +1,20 @@
+
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
 import {
   api,
   getApiErrorMessage,
-  resolveSecureApiUrl,
-  SESSION_KEY,
 } from "../src/services/api.js";
+
+import { resolveApiUrl } from "../src/services/apiConfig.js";
+
 import {
+  SESSION_KEY,
   clearSession,
   createSession,
   readSession,
@@ -23,6 +27,7 @@ const projectRoot = path.resolve(__dirname, "..");
 
 function setupBrowserMocks() {
   const store = new Map();
+
   globalThis.localStorage = {
     getItem: (key) => (store.has(key) ? store.get(key) : null),
     setItem: (key, value) => store.set(key, String(value)),
@@ -31,6 +36,7 @@ function setupBrowserMocks() {
   };
 
   const eventTarget = new EventTarget();
+
   globalThis.window = {
     addEventListener: eventTarget.addEventListener.bind(eventTarget),
     removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
@@ -40,234 +46,428 @@ function setupBrowserMocks() {
 
 function parseEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return {};
+
   const content = fs.readFileSync(filePath, "utf8");
   const vars = {};
+
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
+
     if (!line || line.startsWith("#")) continue;
+
     const eqIndex = line.indexOf("=");
     if (eqIndex === -1) continue;
+
     const key = line.slice(0, eqIndex).trim();
     const value = line.slice(eqIndex + 1).trim();
-    vars[key] = value;
+
+    vars[key] = value.replace(/^["']|["']$/g, "");
   }
+
   return vars;
 }
 
-// ============================================================================
-// 1. OWASP: CONFIGURACIÓN (HTTPS y ausencia de secretos en variables públicas)
-// ============================================================================
+function createTestJwt(payload) {
+  const header = Buffer.from(
+      JSON.stringify({ alg: "HS256", typ: "JWT" }),
+  ).toString("base64url");
 
-test("OWASP Configuración: resolveSecureApiUrl exige HTTPS y bloquea HTTP inseguro", () => {
-  assert.equal(resolveSecureApiUrl("/api/", true), "/api");
+  const body = Buffer.from(
+      JSON.stringify(payload),
+  ).toString("base64url");
+
+  return `${header}.${body}.signature`;
+}
+
+// ============================================================
+// 1. OWASP: CONFIGURACIÓN HTTPS
+// ============================================================
+
+test("OWASP: desarrollo utiliza /api y producción exige HTTPS", () => {
+  assert.equal(resolveApiUrl(false, undefined), "/api");
+  assert.equal(resolveApiUrl(false, "/api/"), "/api");
+
   assert.equal(
-    resolveSecureApiUrl("https://sgau-backend-api.run.app/api/", false),
-    "https://sgau-backend-api.run.app/api",
+      resolveApiUrl(
+          true,
+          "https://sgau-backend-api.run.app/api/",
+      ),
+      "https://sgau-backend-api.run.app/api",
   );
 
   assert.throws(
-    () => resolveSecureApiUrl("http://sgau-backend-api.run.app/api", false),
-    /se requiere HTTPS/i,
+      () => resolveApiUrl(true, undefined),
+      /VITE_API_URL/i,
   );
 
   assert.throws(
-    () => resolveSecureApiUrl("http://sgau-backend-api.run.app/api", true),
-    /se requiere HTTPS/i,
+      () => resolveApiUrl(
+          true,
+          "http://sgau-backend-api.run.app/api",
+      ),
+      /HTTPS/i,
   );
 
   assert.throws(
-    () => resolveSecureApiUrl("https://admin:secreto123@sgau-backend-api.run.app/api", false),
-    /credenciales embebidas/i,
+      () => resolveApiUrl(
+          true,
+          "https://admin:secreto123@sgau-backend-api.run.app/api",
+      ),
+      /HTTPS|credenciales/i,
+  );
+
+  assert.throws(
+      () => resolveApiUrl(
+          true,
+          "https://sgau-backend-api.run.app/",
+      ),
+      /\/api/i,
+  );
+
+  assert.throws(
+      () => resolveApiUrl(
+          true,
+          "https://sgau-backend-api.run.app/api?token=123",
+      ),
+      /HTTPS|parámetros/i,
   );
 });
 
-test("OWASP Configuración: vite.config.js e index.html fuerzan transporte seguro HTTPS", () => {
-  const viteConfig = fs.readFileSync(path.join(projectRoot, "vite.config.js"), "utf8");
-  assert.match(
-    viteConfig,
-    /secure:\s*true/,
-    "El proxy de Vite debe tener 'secure: true' para validar certificados TLS/HTTPS",
+test("OWASP: proxy HTTPS y directiva CSP", () => {
+  const viteConfig = fs.readFileSync(
+      path.join(projectRoot, "vite.config.js"),
+      "utf8",
   );
 
-  const indexHtml = fs.readFileSync(path.join(projectRoot, "index.html"), "utf8");
   assert.match(
-    indexHtml,
-    /upgrade-insecure-requests/i,
-    "index.html debe incluir la directiva CSP 'upgrade-insecure-requests'",
+      viteConfig,
+      /secure:\s*true/,
+      "El proxy debe verificar certificados HTTPS",
+  );
+
+  const indexHtml = fs.readFileSync(
+      path.join(projectRoot, "index.html"),
+      "utf8",
+  );
+
+  assert.match(
+      indexHtml,
+      /upgrade-insecure-requests/i,
+      "Debe existir la directiva CSP upgrade-insecure-requests",
   );
 });
 
-test("OWASP Configuración: ausencia de secretos en variables públicas (VITE_*) y exclusión de .env en Git", () => {
-  const gitignore = fs.readFileSync(path.join(projectRoot, ".gitignore"), "utf8");
-  assert.match(gitignore, /^\.env$/m, ".gitignore debe ignorar el archivo .env");
+// ============================================================
+// 2. OWASP: VARIABLES PÚBLICAS Y SECRETOS
+// ============================================================
 
-  const trackedEnv = execSync("git ls-files .env", {
-    cwd: projectRoot,
-    encoding: "utf8",
-  }).trim();
-  assert.equal(trackedEnv, "", "El archivo .env no debe estar versionado en Git");
+test("OWASP: no exponer secretos en variables VITE_", () => {
+  const gitignore = fs.readFileSync(
+      path.join(projectRoot, ".gitignore"),
+      "utf8",
+  );
 
-  const forbiddenKeyPattern = /(SECRET|PASSWORD|PASSWD|PRIVATE|API_KEY|APIKEY|TOKEN|CREDENTIAL|DB_)/i;
-  const jwtPattern = /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+  assert.match(
+      gitignore,
+      /^\.env$/m,
+      ".env debe estar excluido de Git",
+  );
+
+  const trackedEnv = execFileSync(
+      "git",
+      ["ls-files", ".env"],
+      {
+        cwd: projectRoot,
+        encoding: "utf8",
+      },
+  ).trim();
+
+  assert.equal(
+      trackedEnv,
+      "",
+      ".env no debe estar versionado",
+  );
+
+  const forbiddenKeyPattern =
+      /(SECRET|PASSWORD|PASSWD|PRIVATE|API_KEY|APIKEY|TOKEN|CREDENTIAL|DB_)/i;
+
+  const jwtPattern =
+      /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
   for (const envFileName of [".env.example", ".env"]) {
     const envPath = path.join(projectRoot, envFileName);
+
     if (!fs.existsSync(envPath)) continue;
 
     const envVars = parseEnvFile(envPath);
+
     for (const [key, value] of Object.entries(envVars)) {
       if (key.startsWith("VITE_")) {
         assert.doesNotMatch(
-          key,
-          forbiddenKeyPattern,
-          `La variable pública ${key} en ${envFileName} sugiere contener un secreto`,
+            key,
+            forbiddenKeyPattern,
+            `${key} parece contener un secreto`,
         );
+
         assert.doesNotMatch(
-          value,
-          jwtPattern,
-          `La variable pública ${key} en ${envFileName} contiene un token JWT quemado`,
+            value,
+            jwtPattern,
+            `${key} contiene un JWT`,
         );
       }
 
       if (/^https?:\/\//i.test(value)) {
         assert.match(
-          value,
-          /^https:\/\//i,
-          `La URL configurada en ${key} (${envFileName}) debe usar https://`,
+            value,
+            /^https:\/\//i,
+            `${key} debe utilizar HTTPS`,
         );
       }
     }
   }
 });
 
-// ============================================================================
-// 2. OWASP: DEPENDENCIAS (Vulnerabilidades conocidas en paquetes npm)
-// ============================================================================
+// ============================================================
+// 3. OWASP: DEPENDENCIAS
+// ============================================================
 
-test("OWASP Dependencias: revisar vulnerabilidades conocidas en paquetes npm (npm audit)", () => {
-  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-  const auditOutput = execSync(`${npmCmd} audit --json`, {
-    cwd: projectRoot,
-    encoding: "utf8",
-  });
+test("OWASP: npm audit sin vulnerabilidades conocidas", () => {
+  const npmCli = process.env.npm_execpath;
 
-  const report = JSON.parse(auditOutput);
-  const vulnerabilities = report.metadata?.vulnerabilities || {};
-  const total = vulnerabilities.total ?? 0;
+  assert.ok(
+      npmCli && fs.existsSync(npmCli),
+      "No se encontró npm CLI. Ejecuta esta prueba con npm test o npm run test:security.",
+  );
+
+  let output;
+
+  try {
+    output = execFileSync(
+        process.execPath,
+        [npmCli, "audit", "--json"],
+        {
+          cwd: projectRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+    );
+  } catch (error) {
+    output = error.stdout?.toString();
+
+    assert.ok(
+        output?.trim(),
+        `No se pudo ejecutar npm audit: ${error.message}`,
+    );
+  }
+
+  const report = JSON.parse(output);
+
+  assert.ok(
+      report.metadata?.vulnerabilities &&
+      Number.isInteger(report.metadata.vulnerabilities.total),
+      "npm audit no devolvió un reporte válido de vulnerabilidades",
+  );
 
   assert.equal(
-    total,
-    0,
-    `Se detectaron ${total} vulnerabilidades en paquetes npm: ${JSON.stringify(vulnerabilities)}`,
+      report.metadata.vulnerabilities.total,
+      0,
+      `Se detectaron vulnerabilidades: ${JSON.stringify(report.metadata.vulnerabilities)}`,
   );
 });
 
-// ============================================================================
-// 3. PRUEBAS: Configuración de producción, sesión vencida y errores de auth
-// ============================================================================
+// ============================================================
+// 4. CONFIGURACIÓN DE PRODUCCIÓN
+// ============================================================
 
-test("Pruebas: verificar configuración de producción (URL válida de Cloud Run) y desarrollo", () => {
-  const prodUrl = resolveSecureApiUrl("", false);
-  assert.match(
-    prodUrl,
-    /^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.run\.app\/api$/i,
-    "En producción debe utilizar una URL HTTPS válida de Google Cloud Run (*.run.app/api)",
-  );
-
-  const devUrl = resolveSecureApiUrl("", true);
-  assert.equal(devUrl, "/api", "En desarrollo debe utilizar el proxy local /api");
+test("Producción: URL HTTPS explícita; desarrollo: proxy /api", () => {
+  const productionUrl =
+      "https://sgau-backend-api.run.app/api";
 
   assert.equal(
-    api.defaults.baseURL,
-    prodUrl,
-    "La instancia de Axios debe apuntar por defecto a la URL de producción de Cloud Run",
+      resolveApiUrl(true, productionUrl),
+      productionUrl,
+  );
+
+  assert.equal(
+      resolveApiUrl(false, undefined),
+      "/api",
+  );
+
+  assert.throws(
+      () => resolveApiUrl(true, ""),
+      /VITE_API_URL/i,
+  );
+
+  assert.equal(
+      api.defaults.baseURL,
+      "/api",
+      "En el entorno de pruebas Node, Axios utiliza /api",
   );
 });
 
-test("Pruebas: verificar manejo de sesión vencida (respuesta 401 y sesión corrupta)", async () => {
+// ============================================================
+// 5. SESIÓN VENCIDA Y ERRORES 401
+// ============================================================
+
+test("Autenticación: HTTP 401 limpia sesión y notifica", async () => {
   setupBrowserMocks();
 
-  // Caso 1: Sesión activa que vence cuando el servidor responde 401 Unauthorized
-  saveSession({ token: "token-activo-123", role: "ADMIN", username: "admin" });
-  assert.ok(readSession()?.token, "La sesión debe estar guardada inicialmente");
-
-  let expiredEventCount = 0;
-  window.addEventListener("centro-educativo:session-expired", () => {
-    expiredEventCount += 1;
+  const token = createTestJwt({
+    sub: "admin",
+    rol: "ROLE_ADMIN",
+    exp: Math.floor(Date.now() / 1000) + 3600,
   });
 
-  const responseInterceptor = api.interceptors.response.handlers[0];
+  saveSession({
+    token,
+    role: "ADMIN",
+    username: "admin",
+  });
+
+  assert.equal(readSession()?.token, token);
+
+  let expiredEventCount = 0;
+
+  window.addEventListener(
+      "centro-educativo:session-expired",
+      () => {
+        expiredEventCount += 1;
+      },
+  );
+
+  const responseInterceptor =
+      api.interceptors.response.handlers[0];
+
   await assert.rejects(
-    async () =>
-      responseInterceptor.rejected({
-        response: { status: 401, data: { message: "Token expirado" } },
-      }),
-    (err) => err.response?.status === 401,
+      async () =>
+          responseInterceptor.rejected({
+            response: {
+              status: 401,
+              data: { message: "Token expirado" },
+            },
+          }),
+      (error) => error.response?.status === 401,
   );
 
-  assert.equal(
-    readSession(),
-    null,
-    "Al recibir 401 (sesión vencida), se debe eliminar la sesión de localStorage",
-  );
-  assert.equal(
-    expiredEventCount,
-    1,
-    "Al recibir 401, se debe disparar el evento 'centro-educativo:session-expired'",
-  );
-
-  // Caso 2: Sesión corrupta en localStorage al interceptar petición
-  localStorage.setItem(SESSION_KEY, "{json-corrupto");
-  const requestInterceptor = api.interceptors.request.handlers[0];
-  const config = requestInterceptor.fulfilled({ headers: {} });
-
-  assert.equal(config.headers.Authorization, undefined);
-  assert.equal(localStorage.getItem(SESSION_KEY), null);
-  assert.equal(
-    expiredEventCount,
-    2,
-    "Una sesión corrupta debe limpiarse y notificar 'centro-educativo:session-expired'",
-  );
+  assert.equal(readSession(), null);
+  assert.equal(expiredEventCount, 1);
 
   clearSession();
 });
 
-test("Pruebas: verificar errores de autenticación (401, 403 y login sin token válido)", () => {
-  // Error 401 sin mensaje personalizado del backend
-  assert.equal(
-    getApiErrorMessage({ response: { status: 401, data: {} } }),
-    "La sesión expiró. Inicia sesión nuevamente.",
+test("Autenticación: sesión corrupta no envía token", () => {
+  setupBrowserMocks();
+
+  localStorage.setItem(
+      SESSION_KEY,
+      "{json-corrupto",
   );
 
-  // Error 403 (falta de permisos por rol)
-  assert.equal(
-    getApiErrorMessage({ response: { status: 403, data: {} } }),
-    "No tienes permiso para realizar esta operación.",
+  let expiredEventCount = 0;
+
+  window.addEventListener(
+      "centro-educativo:session-expired",
+      () => {
+        expiredEventCount += 1;
+      },
   );
 
-  // Error de autenticación cuando el backend devuelve mensaje explícito
+  const requestInterceptor =
+      api.interceptors.request.handlers[0];
+
+  const config = requestInterceptor.fulfilled({
+    headers: {},
+  });
+
   assert.equal(
-    getApiErrorMessage({
-      response: { status: 401, data: { message: "Credenciales inválidas" } },
-    }),
-    "Credenciales inválidas",
+      config.headers.Authorization,
+      undefined,
   );
 
-  // Error cuando el login no devuelve un token JWT válido
+  assert.equal(
+      localStorage.getItem(SESSION_KEY),
+      null,
+  );
+
+  assert.equal(expiredEventCount, 1);
+});
+
+// ============================================================
+// 6. AUTENTICACIÓN Y MENSAJES SEGUROS
+// ============================================================
+
+test("Autenticación: mensajes seguros para 401 y 403", () => {
+  assert.equal(
+      getApiErrorMessage({
+        response: {
+          status: 401,
+          data: {},
+        },
+      }),
+      "La sesión expiró. Inicia sesión nuevamente.",
+  );
+
+  assert.equal(
+      getApiErrorMessage({
+        response: {
+          status: 403,
+          data: {},
+        },
+      }),
+      "No tienes permiso para realizar esta operación.",
+  );
+
+  assert.equal(
+      getApiErrorMessage({
+        response: {
+          status: 401,
+          data: {
+            message: "Credenciales inválidas",
+          },
+        },
+      }),
+      "La sesión expiró. Inicia sesión nuevamente.",
+  );
+
+  assert.equal(
+      getApiErrorMessage({
+        response: {
+          status: 500,
+          data: {
+            message: "Bearer token.secreto.firma",
+          },
+        },
+      }),
+      "La solicitud no pudo completarse.",
+  );
+});
+
+// ============================================================
+// 7. VALIDACIÓN DE JWT
+// ============================================================
+
+test("JWT: rechaza token vacío y permite sesión válida", () => {
   assert.throws(
-    () => createSession({ token: "   " }, "admin"),
-    /no devolvió un token de sesión válido/i,
+      () => createSession(
+          { token: "   " },
+          "admin",
+      ),
+      /token de sesión válido/i,
   );
 
-  // Creación exitosa de sesión con un JWT válido
-  const payloadBase64 = Buffer.from(
-    JSON.stringify({ sub: "docente1", rol: "ROLE_DOCENTE" }),
-  ).toString("base64url");
-  const fakeJwt = `eyJhbGciOiJIUzI1NiJ9.${payloadBase64}.signature`;
-  const session = createSession({ token: fakeJwt }, "fallback");
+  const jwt = createTestJwt({
+    sub: "docente1",
+    rol: "ROLE_DOCENTE",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+
+  const session = createSession(
+      { token: jwt },
+      "fallback",
+  );
 
   assert.deepEqual(session, {
-    token: fakeJwt,
+    token: jwt,
     role: "DOCENTE",
     username: "docente1",
   });
