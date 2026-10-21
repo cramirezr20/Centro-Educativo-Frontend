@@ -17,6 +17,7 @@ export default function LoginPage({ onLogin }) {
     try {
       const response = await login({ username: username.trim(), password });
       const session = createSession(response, username.trim());
+      console.log("Sesión recibida:", session);
       saveSession(session);
       onLogin(session);
     } catch (requestError) {
