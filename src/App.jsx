@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import logo from "./assets/centro-educativo-logo.svg";
 import LoginPage from "./components/LoginPage.jsx";
 import PersonalPage from "./components/PersonalPage.jsx";
@@ -48,12 +48,41 @@ export default function App() {
   const [session, setSession] = useState(readSession);
   const [activeSection, setActiveSection] = useState("inicio");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sectionHistory, setSectionHistory] = useState([]);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+  const mobileMenuOpenerRef = useRef(null);
+  const sidebarRef = useRef(null);
+
+  useEffect(() => {
+    function updateViewport() {
+      setIsMobileViewport(window.matchMedia("(max-width: 760px)").matches);
+    }
+    updateViewport();
+    window.addEventListener("resize", updateViewport);
+    return () => window.removeEventListener("resize", updateViewport);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) {
+      if (mobileMenuOpenerRef.current?.isConnected) mobileMenuOpenerRef.current.focus();
+      return undefined;
+    }
+
+    sidebarRef.current?.querySelector(".sidebar-close")?.focus();
+    function handleMenuKeyDown(event) {
+      if (event.key === "Escape") setMobileMenuOpen(false);
+    }
+    window.addEventListener("keydown", handleMenuKeyDown);
+    return () => window.removeEventListener("keydown", handleMenuKeyDown);
+  }, [mobileMenuOpen]);
 
   useEffect(() => {
     function handleExpiredSession() {
       clearSession();
       setSession(null);
       setActiveSection("inicio");
+      setSectionHistory([]);
+      setMobileMenuOpen(false);
     }
     window.addEventListener("centro-educativo:session-expired", handleExpiredSession);
     return () => window.removeEventListener("centro-educativo:session-expired", handleExpiredSession);
@@ -65,26 +94,49 @@ export default function App() {
     clearSession();
     setSession(null);
     setActiveSection("inicio");
+    setSectionHistory([]);
+    setMobileMenuOpen(false);
   }
 
   function selectSection(section) {
+    if (section !== activeSection) {
+      setSectionHistory((history) => [...history, activeSection]);
+    }
     setActiveSection(section);
     setMobileMenuOpen(false);
   }
 
-  if (!session) return <LoginPage onLogin={(nextSession) => { setSession(nextSession); setActiveSection("inicio"); }} />;
+  function goBack() {
+    if (!sectionHistory.length) return;
+    setActiveSection(sectionHistory[sectionHistory.length - 1]);
+    setSectionHistory((history) => history.slice(0, -1));
+  }
+
+  function closeMobileMenu() {
+    setMobileMenuOpen(false);
+  }
+
+  if (!session) return <LoginPage onLogin={(nextSession) => {
+    setSession(nextSession);
+    setActiveSection("inicio");
+    setSectionHistory([]);
+  }} />;
 
   const currentItem = navigation.find((item) => item.id === activeSection);
   const currentTitle = currentItem?.label || "Acceso restringido";
 
   return (
     <div className="app-shell">
-      {mobileMenuOpen && <button aria-label="Cerrar menú" className="mobile-menu-backdrop" onClick={() => setMobileMenuOpen(false)} />}
-      <aside className={`sidebar ${mobileMenuOpen ? "sidebar-open" : ""}`}>
+      {mobileMenuOpen && <button aria-label="Cerrar menú" className="mobile-menu-backdrop" onClick={closeMobileMenu} />}
+      <aside
+        className={`sidebar ${mobileMenuOpen ? "sidebar-open" : ""}`}
+        inert={isMobileViewport && !mobileMenuOpen}
+        ref={sidebarRef}
+      >
         <div className="sidebar-brand">
           <div className="brand-mark"><img alt="" src={logo} /></div>
           <div className="brand-copy"><strong>Centro Educativo</strong><span>Portal académico</span></div>
-          <button className="sidebar-close" onClick={() => setMobileMenuOpen(false)} aria-label="Cerrar menú">×</button>
+          <button className="sidebar-close" onClick={closeMobileMenu} aria-label="Cerrar menú">×</button>
         </div>
 
         <div className="sidebar-profile">
@@ -93,7 +145,7 @@ export default function App() {
           <span className="online-dot" title="Sesión activa" />
         </div>
 
-        <nav className="sidebar-nav" aria-label="Navegación principal">
+        <nav className="sidebar-nav" id="primary-navigation" aria-label="Navegación principal">
           {navigation.map((item, index) => (
             <div key={item.id}>
               {(index === 0 || navigation[index - 1].group !== item.group) && <p className="nav-group">{item.group}</p>}
@@ -119,7 +171,27 @@ export default function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <button className="mobile-menu-button" onClick={() => setMobileMenuOpen(true)} aria-label="Abrir menú">☰</button>
+          <button
+            aria-controls="primary-navigation"
+            aria-expanded={mobileMenuOpen}
+            aria-label="Abrir menú"
+            className="mobile-menu-button"
+            onClick={(event) => {
+              mobileMenuOpenerRef.current = event.currentTarget;
+              setMobileMenuOpen(true);
+            }}
+          >
+            ☰
+          </button>
+          <button
+            aria-label="Regresar a la sección anterior"
+            className="back-button"
+            disabled={!sectionHistory.length}
+            onClick={goBack}
+            type="button"
+          >
+            <span aria-hidden="true">←</span> Atrás
+          </button>
           <div className="breadcrumb"><span>Portal</span><span className="breadcrumb-separator">/</span><strong>{currentTitle}</strong></div>
           <div className="topbar-right">
             <span className="topbar-date">{new Intl.DateTimeFormat("es-GT", { dateStyle: "medium" }).format(new Date())}</span>
