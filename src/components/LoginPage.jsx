@@ -1,6 +1,7 @@
 import { useState } from "react";
 import logo from "../assets/centro-educativo-logo.svg";
 import { login } from "../services/educationService.js";
+import { LOGIN_CRYPTO_ERROR_CODES } from "../services/loginCrypto.js";
 import { createSession, saveSession } from "../utils/auth.js";
 
 export default function LoginPage({ onLogin }) {
@@ -11,6 +12,7 @@ export default function LoginPage({ onLogin }) {
 
   async function handleSubmit(event) {
     event.preventDefault();
+    if (submitting) return;
     setError("");
     setSubmitting(true);
     try {
@@ -19,11 +21,21 @@ export default function LoginPage({ onLogin }) {
       saveSession(session);
       onLogin(session);
     } catch (requestError) {
-      setError(
-        requestError.response?.status === 401
-          ? "El usuario o la contraseña no son correctos."
-          : "No se pudo iniciar sesión. Intenta de nuevo.",
-      );
+      if (requestError.response?.status === 401) {
+        setError("El usuario o la contraseña no son correctos.");
+      } else if (requestError.code === LOGIN_CRYPTO_ERROR_CODES.PASSWORD_INVALID) {
+        setError("Ingresa una contraseña para continuar.");
+      } else if (requestError.code === LOGIN_CRYPTO_ERROR_CODES.UNAVAILABLE) {
+        setError("Este navegador no permite el cifrado seguro requerido para iniciar sesión.");
+      } else if (requestError.code === LOGIN_CRYPTO_ERROR_CODES.KEY_CONNECTION) {
+        setError("No se pudo conectar con el servidor para preparar el inicio de sesión.");
+      } else if (requestError.code === LOGIN_CRYPTO_ERROR_CODES.KEY_REQUEST ||
+                 requestError.code === LOGIN_CRYPTO_ERROR_CODES.KEY_INVALID ||
+                 requestError.code === LOGIN_CRYPTO_ERROR_CODES.ENCRYPTION_FAILED) {
+        setError("No se pudo preparar el inicio de sesión de forma segura. Intenta de nuevo.");
+      } else {
+        setError("No se pudo iniciar sesión. Intenta de nuevo.");
+      }
     } finally {
       setSubmitting(false);
     }

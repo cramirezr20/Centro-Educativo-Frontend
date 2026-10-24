@@ -10,7 +10,51 @@ export const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+function normalizePath(value) {
+  if (typeof value !== "string" || !value) return "";
+  try {
+    return new URL(value, "http://localhost").pathname.replace(/\/+$/, "") || "/";
+  } catch {
+    return value.split("?")[0].replace(/\/+$/, "") || "/";
+  }
+}
+
+function requestPath(config) {
+  const path = normalizePath(config?.url);
+  const basePath = normalizePath(config?.baseURL);
+  if (basePath && basePath !== "/" && path.startsWith(`${basePath}/`)) {
+    return path.slice(basePath.length) || "/";
+  }
+  return path;
+}
+
+export function isPublicAuthRequest(config) {
+  const method = String(config?.method || "get").toUpperCase();
+  const path = requestPath(config);
+  return (method === "GET" && path === "/auth/public-key") ||
+    (method === "POST" && path === "/auth/login");
+}
+
+function removeAuthorizationHeader(headers) {
+  if (!headers) return;
+  for (const headerGroup of [headers, headers.common]) {
+    if (!headerGroup) continue;
+    if (typeof headerGroup.delete === "function") {
+      headerGroup.delete("Authorization");
+      headerGroup.delete("authorization");
+    } else {
+      delete headerGroup.Authorization;
+      delete headerGroup.authorization;
+    }
+  }
+}
+
 api.interceptors.request.use((config) => {
+  if (isPublicAuthRequest(config)) {
+    removeAuthorizationHeader(config.headers);
+    return config;
+  }
+
   const hadSession = localStorage.getItem(SESSION_KEY) !== null;
   const session = readSession();
   if (hadSession && !session) {
@@ -25,7 +69,7 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !isPublicAuthRequest(error.config)) {
       clearSession();
       window.dispatchEvent(new Event("centro-educativo:session-expired"));
     }
