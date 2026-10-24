@@ -1,4 +1,5 @@
 import { api } from "./api.js";
+import { encryptPassword, LoginCryptoError, LOGIN_CRYPTO_ERROR_CODES } from "./loginCrypto.js";
 
 export const resourceConfig = {
   carreras: {
@@ -111,7 +112,18 @@ export function normalizeList(payload) {
 }
 
 export async function login(credentials) {
-  const response = await api.post("/auth/login", credentials);
+  if (!credentials || typeof credentials.password !== "string" || credentials.password.length === 0) {
+    throw new LoginCryptoError(
+      LOGIN_CRYPTO_ERROR_CODES.PASSWORD_INVALID,
+      "La contraseña es obligatoria.",
+    );
+  }
+
+  const passwordEncrypted = await encryptPassword(credentials.password);
+  const response = await api.post("/auth/login", {
+    username: credentials.username,
+    passwordEncrypted,
+  });
   return response.data;
 }
 

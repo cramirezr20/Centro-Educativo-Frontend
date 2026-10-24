@@ -1,7 +1,9 @@
+import { webcrypto } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { api, getApiErrorMessage } from "../src/services/api.js";
+import { api, getApiErrorMessage, isPublicAuthRequest } from "../src/services/api.js";
 import { resolveApiUrl } from "../src/services/apiConfig.js";
+import { login } from "../src/services/educationService.js";
 import { clearSession, createSession, readSession, saveSession, SESSION_KEY } from "../src/utils/auth.js";
 
 const values = new Map();
@@ -77,5 +79,122 @@ test("development uses the local proxy; production requires a HTTPS API URL", ()
   assert.equal(resolveApiUrl(true, "https://example.run.app/api/"), "https://example.run.app/api");
   for (const url of [undefined, "/api", "http://example.run.app/api", "https://user:pass@example.run.app/api", "https://example.run.app/other"]) {
     assert.throws(() => resolveApiUrl(true, url), /VITE_API_URL/);
+  }
+});
+
+test("login imports SPKI and sends only the RSA-OAEP ciphertext", async () => {
+  const keyPair = await webcrypto.subtle.generateKey(
+    { name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["encrypt", "decrypt"],
+  );
+  const spki = new Uint8Array(await webcrypto.subtle.exportKey("spki", keyPair.publicKey));
+  const publicKey = Buffer.from(spki).toString("base64");
+  const requests = [];
+  const previousAdapter = api.defaults.adapter;
+  const previousDefaultAuthorization = api.defaults.headers.common.Authorization;
+  const previousCryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const responseData = { token: "server-response", rol: "ADMIN" };
+
+  Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true, enumerable: true });
+  api.defaults.headers.common.Authorization = "Bearer stale-token";
+  api.defaults.adapter = async (config) => {
+    requests.push({ method: config.method, url: config.url, authorization: config.headers.Authorization, data: config.data });
+    if (config.url === "/auth/public-key") {
+      return { data: { publicKey, algorithm: "RSA-OAEP", hash: "SHA-256", format: "SPKI" }, status: 200, statusText: "OK", headers: {}, config };
+    }
+    if (config.url === "/auth/login") {
+      return { data: responseData, status: 200, statusText: "OK", headers: {}, config };
+    }
+    throw new Error(`Unexpected URL: ${config.url}`);
+  };
+
+  try {
+    const password = "  contraseña ñ  ";
+    const response = await login({ username: "ana", password });
+    const payload = JSON.parse(requests[1].data);
+    const decrypted = await webcrypto.subtle.decrypt(
+      { name: "RSA-OAEP", label: new ArrayBuffer(0) },
+      keyPair.privateKey,
+      Buffer.from(payload.passwordEncrypted, "base64"),
+    );
+
+    assert.deepEqual(response, responseData);
+    assert.deepEqual(Object.keys(payload).sort(), ["passwordEncrypted", "username"]);
+    assert.equal(payload.username, "ana");
+    assert.equal(new TextDecoder().decode(decrypted), password);
+    assert.deepEqual(requests.map(({ method, url }) => `${method.toUpperCase()} ${url}`), [
+      "GET /auth/public-key",
+      "POST /auth/login",
+    ]);
+    assert.equal(requests[0].authorization, undefined);
+    assert.equal(requests[1].authorization, undefined);
+    assert.equal(isPublicAuthRequest({ method: "GET", url: "/auth/public-key", baseURL: "http://localhost:8081/api" }), true);
+    assert.equal(isPublicAuthRequest({ method: "POST", url: "/api/auth/login", baseURL: "http://localhost:8081/api" }), true);
+    assert.equal(isPublicAuthRequest({ method: "GET", url: "/auth/login", baseURL: "http://localhost:8081/api" }), false);
+  } finally {
+    api.defaults.adapter = previousAdapter;
+    if (previousDefaultAuthorization === undefined) delete api.defaults.headers.common.Authorization;
+    else api.defaults.headers.common.Authorization = previousDefaultAuthorization;
+    Object.defineProperty(globalThis, "crypto", previousCryptoDescriptor);
+  }
+});
+
+test("key retrieval or encryption failure does not issue the login POST", async () => {
+  const previousAdapter = api.defaults.adapter;
+  const requests = [];
+  api.defaults.adapter = async (config) => {
+    requests.push(config.method.toUpperCase() + " " + config.url);
+    if (config.url === "/auth/public-key") throw new Error("offline");
+    throw new Error("The login POST must not run");
+  };
+
+  try {
+    await assert.rejects(
+      login({ username: "ana", password: "secret" }),
+      (error) => error.code === "LOGIN_KEY_CONNECTION",
+    );
+    assert.deepEqual(requests, ["GET /auth/public-key"]);
+  } finally {
+    api.defaults.adapter = previousAdapter;
+  }
+});
+
+test("encryption failure does not issue the login POST", async () => {
+  const keyPair = await webcrypto.subtle.generateKey(
+    { name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["encrypt", "decrypt"],
+  );
+  const spki = new Uint8Array(await webcrypto.subtle.exportKey("spki", keyPair.publicKey));
+  const publicKey = Buffer.from(spki).toString("base64");
+  const previousAdapter = api.defaults.adapter;
+  const previousCryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const requests = [];
+  const failingCrypto = {
+    subtle: {
+      importKey: (...args) => webcrypto.subtle.importKey(...args),
+      encrypt: async () => { throw new Error("cipher failure"); },
+    },
+  };
+
+  Object.defineProperty(globalThis, "crypto", { value: failingCrypto, configurable: true, enumerable: true });
+  api.defaults.adapter = async (config) => {
+    requests.push(config.method.toUpperCase() + " " + config.url);
+    if (config.url === "/auth/public-key") {
+      return { data: { publicKey, algorithm: "RSA-OAEP", hash: "SHA-256", format: "SPKI" }, status: 200, statusText: "OK", headers: {}, config };
+    }
+    throw new Error("The login POST must not run");
+  };
+
+  try {
+    await assert.rejects(
+      login({ username: "ana", password: "secret" }),
+      (error) => error.code === "LOGIN_ENCRYPTION_FAILED",
+    );
+    assert.deepEqual(requests, ["GET /auth/public-key"]);
+  } finally {
+    api.defaults.adapter = previousAdapter;
+    Object.defineProperty(globalThis, "crypto", previousCryptoDescriptor);
   }
 });
