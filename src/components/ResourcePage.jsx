@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createResource,
   deleteResource,
@@ -8,6 +8,10 @@ import {
   updateResource,
 } from "../services/educationService.js";
 import { getApiErrorMessage } from "../services/api.js";
+import { paginateRecords, settleLookups } from "../utils/resourcePageUtils.js";
+
+const focusableSelector = "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
+const pageSize = 25;
 
 function displayValue(value) {
   if (value === null || value === undefined || value === "") return "—";
@@ -61,18 +65,35 @@ export default function ResourcePage({ resource }) {
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
   const [values, setValues] = useState({});
+  const [lookupErrors, setLookupErrors] = useState({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const modalRef = useRef(null);
+  const modalOpenerRef = useRef(null);
 
   async function loadPage() {
     setLoading(true);
     setError("");
+    setLookupErrors({});
     try {
-      const [items, ...lookupResults] = await Promise.all([
+      const [itemsResult, ...lookupResults] = await Promise.allSettled([
         listResource(resource),
         ...(config.lookups || []).map((lookup) => listResource(lookup)),
       ]);
-      setRecords(items);
-      setLookups(
-        Object.fromEntries((config.lookups || []).map((key, index) => [key, lookupResults[index]])),
+      if (itemsResult.status === "rejected") throw itemsResult.reason;
+
+      const { values: lookupValues, errors: failedLookups } = settleLookups(
+        config.lookups || [],
+        lookupResults,
+      );
+      setRecords(itemsResult.value);
+      setLookups(lookupValues);
+      setLookupErrors(
+        Object.fromEntries(
+          Object.entries(failedLookups).map(([key, requestError]) => [
+            key,
+            getApiErrorMessage(requestError),
+          ]),
+        ),
       );
     } catch (requestError) {
       setError(getApiErrorMessage(requestError));
@@ -85,6 +106,7 @@ export default function ResourcePage({ resource }) {
     setEditing(null);
     setValues({});
     setSearch("");
+    setCurrentPage(1);
     loadPage();
   }, [resource]);
 
@@ -96,7 +118,27 @@ export default function ResourcePage({ resource }) {
     );
   }, [records, search]);
 
+  const { pageCount, visiblePage, pageRecords, startIndex, endIndex } = useMemo(() => {
+    const page = paginateRecords(filteredRecords, currentPage, pageSize);
+    return {
+      pageCount: page.pageCount,
+      visiblePage: page.currentPage,
+      pageRecords: page.items,
+      startIndex: page.startIndex,
+      endIndex: page.endIndex,
+    };
+  }, [filteredRecords, currentPage]);
+
+  useEffect(() => {
+    if (!editing) return;
+    const firstField = modalRef.current?.querySelector(
+      ".resource-form input:not([type='checkbox']):not(:disabled), .resource-form select:not(:disabled), .resource-form button:not(:disabled)",
+    );
+    firstField?.focus();
+  }, [editing]);
+
   function startCreate() {
+    modalOpenerRef.current = document.activeElement;
     setEditing({ id: null });
     setValues(getFormValues(config.fields));
     setError("");
@@ -104,6 +146,7 @@ export default function ResourcePage({ resource }) {
   }
 
   function startEdit(record) {
+    modalOpenerRef.current = document.activeElement;
     setEditing(record);
     setValues(getFormValues(config.fields, record));
     setError("");
@@ -113,6 +156,33 @@ export default function ResourcePage({ resource }) {
   function closeForm() {
     setEditing(null);
     setValues({});
+    if (modalOpenerRef.current?.isConnected) modalOpenerRef.current.focus();
+    modalOpenerRef.current = null;
+  }
+
+  function handleModalKeyDown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeForm();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const focusable = [...event.currentTarget.querySelectorAll(focusableSelector)];
+    if (!focusable.length) {
+      event.preventDefault();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !event.currentTarget.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !event.currentTarget.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   async function handleSubmit(event) {
@@ -187,6 +257,15 @@ export default function ResourcePage({ resource }) {
 
       {notice && <div className="alert alert-success" role="status">{notice}</div>}
       {error && <div className="alert alert-error" role="alert">{error}</div>}
+      {!loading && Object.keys(lookupErrors).length > 0 && (
+        <div className="alert alert-warning" role="status">
+          <span>
+            Algunos catálogos auxiliares no están disponibles. El listado principal sigue disponible.
+            {" "}{Object.entries(lookupErrors).map(([key, message]) => `${resourceConfig[key]?.title || key}: ${message}`).join(" ")}
+          </span>
+          <button className="button button-quiet" onClick={loadPage} type="button">Reintentar</button>
+        </div>
+      )}
 
       <div className="panel table-panel">
         <div className="table-toolbar">
@@ -197,7 +276,11 @@ export default function ResourcePage({ resource }) {
           <label className="search-field">
             <span aria-hidden="true">⌕</span>
             <input
-              onChange={(event) => setSearch(event.target.value)}
+              aria-label={`Buscar ${config.title.toLocaleLowerCase()}`}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setCurrentPage(1);
+              }}
               placeholder={`Buscar ${config.title.toLocaleLowerCase()}…`}
               value={search}
             />
@@ -224,7 +307,7 @@ export default function ResourcePage({ resource }) {
                 </tr>
               </thead>
               <tbody>
-                {filteredRecords.map((record) => (
+                {pageRecords.map((record) => (
                   <tr key={record.id}>
                     {config.columns.map((column) => (
                       <td key={column}>
@@ -259,11 +342,44 @@ export default function ResourcePage({ resource }) {
             </table>
           </div>
         )}
+        {!loading && filteredRecords.length > 0 && (
+          <nav className="pagination" aria-label="Paginación de registros">
+            <span>Mostrando {startIndex}–{endIndex} de {filteredRecords.length}</span>
+            <div className="pagination-controls">
+              <button
+                aria-label="Página anterior"
+                className="button button-quiet"
+                disabled={visiblePage <= 1}
+                onClick={() => setCurrentPage(visiblePage - 1)}
+                type="button"
+              >
+                Anterior
+              </button>
+              <span aria-live="polite">Página {visiblePage} de {pageCount}</span>
+              <button
+                aria-label="Página siguiente"
+                className="button button-quiet"
+                disabled={visiblePage >= pageCount}
+                onClick={() => setCurrentPage(visiblePage + 1)}
+                type="button"
+              >
+                Siguiente
+              </button>
+            </div>
+          </nav>
+        )}
       </div>
 
       {editing && (
         <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeForm()}>
-          <section aria-labelledby="resource-form-title" aria-modal="true" className="modal-card" role="dialog">
+          <section
+            aria-labelledby="resource-form-title"
+            aria-modal="true"
+            className="modal-card"
+            onKeyDown={handleModalKeyDown}
+            ref={modalRef}
+            role="dialog"
+          >
             <div className="modal-heading">
               <div>
                 <p className="eyebrow">{editing.id == null ? "NUEVO REGISTRO" : "ACTUALIZAR DATOS"}</p>
@@ -272,6 +388,15 @@ export default function ResourcePage({ resource }) {
               <button className="close-button" onClick={closeForm} aria-label="Cerrar">×</button>
             </div>
             <form className="resource-form" onSubmit={handleSubmit}>
+              {Object.keys(lookupErrors).length > 0 && (
+                <div className="alert alert-warning" role="alert">
+                  <span>
+                    No fue posible cargar uno o más catálogos auxiliares. No se puede enviar este formulario hasta que estén disponibles.
+                    {" "}{Object.entries(lookupErrors).map(([key, message]) => `${resourceConfig[key]?.title || key}: ${message}`).join(" ")}
+                  </span>
+                  <button className="button button-quiet" onClick={loadPage} type="button">Reintentar</button>
+                </div>
+              )}
               <div className="form-grid">
                 {config.fields.map((field) => (
                   <label className={`field ${field.type === "checkbox" ? "field-checkbox" : ""}`} key={field.name}>
@@ -289,11 +414,14 @@ export default function ResourcePage({ resource }) {
                         <span>{field.label}{field.required && <b className="required-mark"> *</b>}</span>
                         {field.type === "select" ? (
                           <select
+                            disabled={Boolean(lookupErrors[field.lookup])}
                             onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.value }))}
                             required={field.required}
                             value={values[field.name] ?? ""}
                           >
-                            <option value="">Selecciona una opción</option>
+                            <option value="">
+                              {lookupErrors[field.lookup] ? "Catálogo no disponible" : "Selecciona una opción"}
+                            </option>
                             {(lookups[field.lookup] || []).map((option) => (
                               <option key={option.id} value={option.id}>{recordLabel(option)}</option>
                             ))}
