@@ -34,9 +34,80 @@ function toList(data) {
   return Array.isArray(data) ? data : [];
 }
 
-export default function PersonalPage({ section }) {
+export default function PersonalPage({ section, role }) {
   if (section === "notas") return <TeacherGradesPage />;
+  if (section === "mis-cursos" && role === "DOCENTE") return <TeacherCoursesPage />;
   return <StudentPage section={section} />;
+}
+
+function TeacherCoursesPage() {
+  const [courses, setCourses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    listTeacherCourses()
+      .then((data) => {
+        if (active) setCourses(toList(data));
+      })
+      .catch((requestError) => {
+        if (active) setError(getApiErrorMessage(requestError));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  return (
+    <section className="page-content">
+      <div className="page-heading">
+        <div>
+          <p className="eyebrow">MI ESPACIO ACADÉMICO</p>
+          <h2>Mis cursos</h2>
+          <p>Consulta los cursos que tienes asignados.</p>
+        </div>
+      </div>
+      {error && <div className="alert alert-error" role="alert">{error}</div>}
+      <div className="panel table-panel">
+        {loading ? (
+          <div className="empty-state"><span className="spinner" /> Cargando cursos…</div>
+        ) : courses.length === 0 ? (
+          <div className="empty-state">
+            <span className="empty-icon" aria-hidden="true">◇</span>
+            <strong>No tienes cursos asignados</strong>
+            <span>Cuando se te asignen cursos, aparecerán en esta sección.</span>
+          </div>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr><th>Código</th><th>Curso</th><th>Créditos</th><th>Carrera</th><th>Estado</th></tr>
+              </thead>
+              <tbody>
+                {courses.map((course, index) => (
+                  <tr key={course.id ?? index}>
+                    <td>{course.codigo ?? "—"}</td>
+                    <td>{course.nombre ?? "—"}</td>
+                    <td>{course.creditos ?? "—"}</td>
+                    <td>{course.carreraNombre ?? "—"}</td>
+                    <td>
+                      <span className={`status-pill ${course.activo === false ? "status-inactive" : "status-active"}`}>
+                        {course.activo === false ? "Inactivo" : "Activo"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function StudentPage({ section }) {
