@@ -232,7 +232,7 @@ export default function App() {
           ) : resourceSection(activeSection) ? (
             <ResourcePage key={activeSection} resource={activeSection} />
           ) : navigation.some((item) => item.id === activeSection) ? (
-            <PersonalPage key={activeSection} section={activeSection} role={session.role} />
+            <PersonalPage key={`${session.role}-${activeSection}`} section={activeSection} role={session.role} />
           ) : (
             <section className="page-content"><div className="alert alert-error">Tu rol no tiene acceso a esta sección.</div></section>
           )}
